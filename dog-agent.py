@@ -111,6 +111,16 @@ async def main():
         logger.error("Please set these in your .env file or environment")
         sys.exit(1)
     
+    # Configure local audio output
+    local_audio_enabled = os.getenv("LOCAL_AUDIO_ENABLED", "false").lower() == "true"
+    local_audio_device = None
+    local_audio_device_env = os.getenv("LOCAL_AUDIO_DEVICE")
+    if local_audio_device_env:
+        try:
+            local_audio_device = int(local_audio_device_env)
+        except ValueError:
+            logger.warning("Invalid LOCAL_AUDIO_DEVICE value, using default device")
+    
     # Configure robot connection using serial number from environment
     serial_number = os.getenv("GO2_SERIAL_NUMBER")
     robot_ip = os.getenv("GO2_ROBOT_IP")
@@ -143,7 +153,7 @@ async def main():
         logger.info("Connecting to Go2 robot...")
         await go2_connection.connect()
         
-        # Create transport with the Go2 connection
+        # Create transport with the Go2 connection and local audio support
         transport = DogTransport(
             go2_connection=go2_connection,
             params=TransportParams(
@@ -151,7 +161,16 @@ async def main():
                 audio_out_enabled=True,
                 vad_analyzer=SileroVADAnalyzer(),
             ),
+            local_audio_enabled=local_audio_enabled,
+            local_audio_device=local_audio_device,
         )
+        
+        # Log audio configuration
+        if local_audio_enabled:
+            device_str = f" (device {local_audio_device})" if local_audio_device is not None else " (default device)"
+            logger.info(f"Audio output: Local computer speakers{device_str}")
+        else:
+            logger.info("Audio output: Robot speakers")
         
         # Initialize services
         deepgram_key = os.getenv("DEEPGRAM_API_KEY")

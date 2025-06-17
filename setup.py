@@ -25,6 +25,6 @@ setup(
         'Pillow',
         'scipy',
         'numpy',
-        'weave'
+        'weave',
     ],
 )

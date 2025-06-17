@@ -2,12 +2,14 @@
 DogTransport - A Pipecat transport for the Unitree Go2 robot.
 
 This transport integrates with the Go2 robot's WebRTC audio streams,
-providing a clean interface for Pipecat pipelines.
+providing a clean interface for Pipecat pipelines. Supports toggling
+between robot speakers and local computer speakers.
 """
 
 import asyncio
 import logging
 import numpy as np
+import fractions
 from typing import Optional, Any, Awaitable, Callable
 from pydantic import BaseModel
 
@@ -29,6 +31,15 @@ from pipecat.transports.base_output import BaseOutputTransport
 from aiortc import AudioStreamTrack
 from av import AudioFrame
 
+# PyAudio import for local audio output
+try:
+    import pyaudio
+    pyaudio_available = True
+except ImportError:
+    pyaudio = None
+    pyaudio_available = False
+    logging.warning("PyAudio not available. Local audio output will be disabled.")
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,53 +52,106 @@ class DogCallbacks(BaseModel):
 
 
 class DogAudioStreamTrack(AudioStreamTrack):
-    """Custom audio stream track for sending audio to the Go2 robot."""
+    """Custom audio stream track for the Go2 robot."""
     
-    def __init__(self, sample_rate: int = 48000):
+    def __init__(self, sample_rate=48000):
         super().__init__()
+        self.sample_rate = sample_rate
+        self.channels = 2  # Stereo
+        self.samples_per_frame = 960  # 20ms of audio at 48kHz (matches working implementation)
         self.audio_queue = asyncio.Queue()
         self._timestamp = 0
-        # Go2 expects 48kHz stereo audio
-        self.sample_rate = sample_rate
-        self.channels = 2
-        self.samples_per_frame = 960  # 20ms of audio at 48kHz
-        self._recv_count = 0
-        logger.info(f"DogAudioStreamTrack initialized with sample_rate={sample_rate}")
         
     async def recv(self):
-        """Receive the next audio frame for WebRTC."""
-        logger.debug("DogAudioStreamTrack: recv() called")
-        
+        """Receive the next audio frame."""
         try:
-            # Try to get audio data from queue without blocking too long
-            audio_data = await asyncio.wait_for(self.audio_queue.get(), timeout=0.02)  # 20ms timeout
-            logger.debug(f"DogAudioStreamTrack: Got audio data of size {len(audio_data)}")
+            # Get audio data from queue (blocks until available)
+            audio_data = await self.audio_queue.get()
         except asyncio.TimeoutError:
-            # Generate silence if no audio data is available
-            silence_size = self.samples_per_frame * 2 * 2  # stereo * 2 bytes per sample
-            audio_data = bytes(silence_size)
-            logger.debug("DogAudioStreamTrack: Generated silence frame")
-        
-        # Create audio frame
+            # Generate silence if no audio available
+            audio_data = bytes(self.samples_per_frame * self.channels * 2)  # 16-bit stereo
+            
+        # Create AudioFrame (match working implementation)
         frame = AudioFrame(format='s16', layout='stereo', samples=self.samples_per_frame)
         frame.sample_rate = self.sample_rate
         frame.pts = self._timestamp
         self._timestamp += self.samples_per_frame
         
-        # Fill frame with audio data
+        # Fill frame with audio data (match working implementation)
         frame.planes[0].update(audio_data)
         
         return frame
-        
+    
     async def add_audio(self, audio_data: bytes):
-        """Add audio data to the queue."""
+        """Add audio data to the queue for playback."""
         await self.audio_queue.put(audio_data)
+
+
+class LocalAudioManager:
+    """Manages local audio output using PyAudio."""
+    
+    def __init__(self, enabled=False, sample_rate=48000, channels=2, device_id=None):
+        self.enabled = enabled and pyaudio_available
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.device_id = device_id
+        self.pyaudio_instance = None
+        self.stream = None
+        
+        if self.enabled:
+            self._initialize_pyaudio()
+    
+    def _initialize_pyaudio(self):
+        """Initialize PyAudio for local audio output."""
+        if not pyaudio:
+            logger.error("PyAudio not available")
+            self.enabled = False
+            return
+            
+        try:
+            self.pyaudio_instance = pyaudio.PyAudio()
+            
+            # Open audio stream for output
+            self.stream = self.pyaudio_instance.open(
+                format=pyaudio.paInt16,
+                channels=self.channels,
+                rate=self.sample_rate,
+                output=True,
+                output_device_index=self.device_id,
+                frames_per_buffer=1024
+            )
+            logger.info(f"Local audio output initialized - Sample rate: {self.sample_rate}Hz, Channels: {self.channels}")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize local audio output: {e}")
+            self.enabled = False
+    
+    async def write_audio(self, audio_data: bytes):
+        """Write audio data to local speakers."""
+        if self.enabled and self.stream:
+            try:
+                # PyAudio write is blocking, so run in thread pool
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self.stream.write, audio_data)
+            except Exception as e:
+                logger.error(f"Error writing to local audio: {e}")
+    
+    def close(self):
+        """Close the local audio stream."""
+        if self.stream:
+            self.stream.stop_stream()
+            self.stream.close()
+            self.stream = None
+        if self.pyaudio_instance:
+            self.pyaudio_instance.terminate()
+            self.pyaudio_instance = None
+        logger.info("Local audio output closed")
 
 
 class DogClient:
     """Client that manages the Go2 WebRTC connection and audio streaming."""
     
-    def __init__(self, go2_connection, callbacks: DogCallbacks):
+    def __init__(self, go2_connection, callbacks: DogCallbacks, local_audio_enabled=False, local_audio_device=None):
         self._go2_connection = go2_connection
         self._callbacks = callbacks
         self._audio_queue = asyncio.Queue()
@@ -98,6 +162,14 @@ class DogClient:
         self._in_sample_rate = None
         self._out_sample_rate = None
         self._connected = False
+        
+        # Local audio manager for hybrid output
+        self._local_audio = LocalAudioManager(
+            enabled=local_audio_enabled,
+            sample_rate=48000,  # Match robot output
+            channels=2,
+            device_id=local_audio_device
+        )
         
     async def setup(self, params: TransportParams, frame: StartFrame):
         """Setup the client with transport parameters."""
@@ -160,6 +232,11 @@ class DogClient:
             return
         self._running = False
         self._connected = False
+        
+        # Close local audio
+        if self._local_audio:
+            self._local_audio.close()
+            
         await self._callbacks.on_client_disconnected(self._go2_connection)
         
     async def _handle_robot_audio(self, frame):
@@ -207,12 +284,9 @@ class DogClient:
                 await asyncio.sleep(0.01)
                 
     async def write_audio_frame(self, frame: OutputAudioRawFrame):
-        """Write audio frame to the robot."""
+        """Write audio frame to both robot and local speakers (if enabled)."""
         if not self._running:
             logger.warning("DogClient: Not running, skipping audio frame")
-            return
-        if not self._audio_track:
-            logger.warning("DogClient: No audio track, skipping audio frame")
             return
             
         try:
@@ -233,33 +307,46 @@ class DogClient:
                 
             # Convert mono to stereo by duplicating the channel
             stereo_audio = np.stack([upsampled, upsampled], axis=1)
+            stereo_bytes = stereo_audio.flatten().astype(np.int16).tobytes()
             
-            # Ensure we have the right amount of data for a frame
-            # samples_per_frame * 2 channels * 2 bytes per sample
-            frame_size_bytes = self._audio_track.samples_per_frame * 2 * 2
-            
-            # Add to buffer
-            self._audio_buffer.extend(stereo_audio.flatten().astype(np.int16).tobytes())
-            
-            # Send complete frames
-            frames_sent = 0
-            while len(self._audio_buffer) >= frame_size_bytes:
-                frame_data = bytes(self._audio_buffer[:frame_size_bytes])
-                self._audio_buffer = self._audio_buffer[frame_size_bytes:]
+            # Send to local speakers first (lower latency for user feedback)
+            if self._local_audio.enabled:
+                await self._local_audio.write_audio(stereo_bytes)
+                # When local audio is enabled, don't send to robot speakers
+                logger.debug(f"DogClient: Sent audio to local speakers only")
+                return
                 
-                # Send to audio track
-                await self._audio_track.add_audio(frame_data)
-                frames_sent += 1
+            # Send to robot speakers (only when local audio is disabled)
+            if self._audio_track:
+                # Ensure we have the right amount of data for a frame
+                # Use the same calculation as the working implementation
+                frame_size = self._audio_track.samples_per_frame * 2  # stereo
+                frame_size_bytes = frame_size * 2  # 2 bytes per sample
                 
-            if frames_sent > 0:
-                logger.info(f"DogClient: Sent {frames_sent} audio frames to track, buffer remaining: {len(self._audio_buffer)} bytes")
-            
-            # Log if we're accumulating too much in the buffer
-            if len(self._audio_buffer) > frame_size_bytes * 2:
-                logger.warning(f"DogClient: Audio buffer growing large: {len(self._audio_buffer)} bytes")
+                # Add to buffer
+                self._audio_buffer.extend(stereo_bytes)
+                
+                # Send complete frames (match working implementation logic)
+                frames_sent = 0
+                while len(self._audio_buffer) >= frame_size_bytes:
+                    frame_data = bytes(self._audio_buffer[:frame_size_bytes])
+                    self._audio_buffer = self._audio_buffer[frame_size_bytes:]
+                    
+                    # Send to audio track
+                    await self._audio_track.add_audio(frame_data)
+                    frames_sent += 1
+                    
+                    # Prevent too many frames at once
+                    if frames_sent >= 10:
+                        break
+                    
+                if frames_sent > 0:
+                    logger.debug(f"DogClient: Sent {frames_sent} audio frames to robot")
+            else:
+                logger.warning("DogClient: No audio track, skipping robot audio frame")
                 
         except Exception as e:
-            logger.error(f"DogClient: Error writing audio frame: {e}", exc_info=True)
+            logger.error(f"DogClient: Error processing audio frame: {e}")
             
     async def send_message(self, frame: TransportMessageFrame | TransportMessageUrgentFrame):
         """Send a message through the data channel if available."""
@@ -383,6 +470,7 @@ class DogTransport(BaseTransport):
     
     This transport handles bidirectional audio streaming between the robot
     and Pipecat, with automatic format conversion and event handling.
+    Supports exclusive toggle between robot speakers and local computer speakers.
     """
     
     def __init__(
@@ -391,6 +479,8 @@ class DogTransport(BaseTransport):
         params: TransportParams,
         input_name: Optional[str] = None,
         output_name: Optional[str] = None,
+        local_audio_enabled: bool = False,
+        local_audio_device: Optional[int] = None,
     ):
         """
         Initialize the DogTransport.
@@ -400,11 +490,15 @@ class DogTransport(BaseTransport):
             params: Transport parameters (audio settings, VAD, etc.)
             input_name: Optional name for the input transport
             output_name: Optional name for the output transport
+            local_audio_enabled: Enable local computer speaker output
+            local_audio_device: PyAudio device ID for local output (None for default)
         """
         super().__init__(input_name=input_name, output_name=output_name)
         
         self._params = params
         self._go2_connection = go2_connection
+        self._local_audio_enabled = local_audio_enabled
+        self._local_audio_device = local_audio_device
         
         self._callbacks = DogCallbacks(
             on_app_message=self._on_app_message,
@@ -413,8 +507,13 @@ class DogTransport(BaseTransport):
             on_client_closed=self._on_client_closed,
         )
         
-        # Create client without audio track (will be created after connection)
-        self._client = DogClient(go2_connection, self._callbacks)
+        # Create client with local audio support
+        self._client = DogClient(
+            go2_connection, 
+            self._callbacks,
+            local_audio_enabled=local_audio_enabled,
+            local_audio_device=local_audio_device
+        )
         
         self._input: Optional[DogInputTransport] = None
         self._output: Optional[DogOutputTransport] = None
@@ -424,6 +523,13 @@ class DogTransport(BaseTransport):
         self._register_event_handler("on_client_connected")
         self._register_event_handler("on_client_disconnected")
         self._register_event_handler("on_client_closed")
+        
+        # Log configuration
+        if local_audio_enabled:
+            device_str = f" (device {local_audio_device})" if local_audio_device is not None else " (default device)"
+            logger.info(f"DogTransport: Local audio output enabled - Computer speakers only{device_str}")
+        else:
+            logger.info("DogTransport: Robot audio output enabled - Robot speakers only")
         
     def input(self) -> DogInputTransport:
         """Get the input transport."""

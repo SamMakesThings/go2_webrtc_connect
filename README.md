@@ -50,6 +50,43 @@ The driver supports three types of connection methods:
 ## Multicast scanner
 The driver has a built-in Multicast scanner to find the Unitree Go2 on the local network and connect using only the serial number.
 
+## Features
+
+- WebRTC connection to Go2 robots
+- Bidirectional audio streaming
+- Voice agent with AI conversation capabilities
+- **Audio output toggle** - switch between robot speakers and local computer speakers
+- Real-time data channel communication
+- Examples for various use cases
+
+## Voice Agent
+
+The `dog-agent.py` script creates an AI voice agent that can have natural conversations through the robot. It supports audio output toggle, allowing you to switch between robot speakers and computer speakers.
+
+### Environment Variables
+
+Required:
+- `OPENAI_API_KEY` - Your OpenAI API key
+- `CARTESIA_API_KEY` - Your Cartesia API key (for TTS)
+- `DEEPGRAM_API_KEY` - Your Deepgram API key (for STT)
+- `GO2_SERIAL_NUMBER` - Your robot's serial number (or use `GO2_ROBOT_IP`)
+
+Optional (for audio output control):
+- `LOCAL_AUDIO_ENABLED=true` - Output to local computer speakers instead of robot speakers
+- `LOCAL_AUDIO_DEVICE=<device_id>` - Specify PyAudio device ID (optional, uses default if not set)
+
+### Audio Output Toggle
+
+The voice agent supports exclusive audio output toggle:
+- **When `LOCAL_AUDIO_ENABLED=false` (default)**: AI responses play through robot speakers
+- **When `LOCAL_AUDIO_ENABLED=true`**: AI responses play through local computer speakers
+
+This is especially useful for:
+- Development and testing (use local speakers)
+- Remote operation scenarios
+- Situations where you prefer local audio feedback over robot speakers
+
+To switch to local speakers, set `LOCAL_AUDIO_ENABLED=true` in your environment variables or `.env` file.
 
 ## Installation
 

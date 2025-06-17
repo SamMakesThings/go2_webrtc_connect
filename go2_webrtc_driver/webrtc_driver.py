@@ -223,5 +223,3 @@ class Go2WebRTCConnection:
         peer_answer_json = send_sdp_to_local_peer(ip, json.dumps(sdp_offer_json))
 
         return peer_answer_json
-
-

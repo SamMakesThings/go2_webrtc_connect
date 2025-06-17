@@ -7,10 +7,18 @@ import wave
 
 
 class WebRTCAudioChannel:
-    def __init__(self, pc, datachannel) -> None:
+    def __init__(self, pc, datachannel, audio_track=None) -> None:
         self.pc = pc
-        self.pc.addTransceiver("audio", direction="sendrecv")
         self.datachannel = datachannel
+        
+        # If an audio track is provided, add it to the peer connection
+        if audio_track:
+            self.pc.addTrack(audio_track)
+            logging.info("Added custom audio track to peer connection")
+        else:
+            # Only add transceiver if no track is provided
+            self.pc.addTransceiver("audio", direction="sendrecv")
+            logging.info("Added audio transceiver without track")
 
         # List to hold multiple callbacks
         self.track_callbacks = []
@@ -37,5 +45,3 @@ class WebRTCAudioChannel:
 
     def switchAudioChannel(self, switch: bool):
         self.datachannel.switchAudioChannel(switch)
-    
-        
