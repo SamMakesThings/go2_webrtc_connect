@@ -26,5 +26,8 @@ setup(
         'scipy',
         'numpy',
         'weave',
+        'fastapi',
+        'uvicorn',
+        'pipecat-ai-small-webrtc-prebuilt'
     ],
 )

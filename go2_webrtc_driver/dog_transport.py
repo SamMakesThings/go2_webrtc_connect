@@ -88,70 +88,122 @@ class DogAudioStreamTrack(AudioStreamTrack):
 
 
 class LocalAudioManager:
-    """Manages local audio output using PyAudio."""
+    """Manages local audio input/output using PyAudio."""
     
-    def __init__(self, enabled=False, sample_rate=48000, channels=2, device_id=None):
+    def __init__(self, enabled=False, sample_rate=48000, channels=2, output_device_id=None, input_device_id=None, input_enabled=False):
         self.enabled = enabled and pyaudio_available
+        self.input_enabled = input_enabled and self.enabled
         self.sample_rate = sample_rate
         self.channels = channels
-        self.device_id = device_id
+        self.output_device_id = output_device_id
+        self.input_device_id = input_device_id
         self.pyaudio_instance = None
-        self.stream = None
+        self.output_stream = None
+        self.input_stream = None
+        self.input_queue = asyncio.Queue()
+        self._input_task = None
         
         if self.enabled:
             self._initialize_pyaudio()
     
     def _initialize_pyaudio(self):
-        """Initialize PyAudio for local audio output."""
+        """Initialize PyAudio for local audio input/output."""
         if not pyaudio:
             logger.error("PyAudio not available")
             self.enabled = False
+            self.input_enabled = False
             return
             
         try:
             self.pyaudio_instance = pyaudio.PyAudio()
             
             # Open audio stream for output
-            self.stream = self.pyaudio_instance.open(
+            self.output_stream = self.pyaudio_instance.open(
                 format=pyaudio.paInt16,
                 channels=self.channels,
                 rate=self.sample_rate,
                 output=True,
-                output_device_index=self.device_id,
+                output_device_index=self.output_device_id,
                 frames_per_buffer=1024
             )
             logger.info(f"Local audio output initialized - Sample rate: {self.sample_rate}Hz, Channels: {self.channels}")
             
+            # Open audio stream for input if enabled
+            if self.input_enabled:
+                self.input_stream = self.pyaudio_instance.open(
+                    format=pyaudio.paInt16,
+                    channels=1,  # Mono input for better STT performance
+                    rate=16000,  # Use 16kHz for input to match STT requirements
+                    input=True,
+                    input_device_index=self.input_device_id,
+                    frames_per_buffer=1024,
+                    stream_callback=self._input_callback
+                )
+                self.input_stream.start_stream()
+                logger.info(f"Local microphone input initialized - Sample rate: 16000Hz, Channels: 1")
+            
         except Exception as e:
-            logger.error(f"Failed to initialize local audio output: {e}")
+            logger.error(f"Failed to initialize local audio: {e}")
             self.enabled = False
+            self.input_enabled = False
+    
+    def _input_callback(self, in_data, frame_count, time_info, status):
+        """Callback for audio input stream."""
+        if status:
+            logger.warning(f"Local microphone input status: {status}")
+        
+        # Put audio data in queue for processing
+        try:
+            self.input_queue.put_nowait(in_data)
+        except asyncio.QueueFull:
+            logger.warning("Local microphone input queue full, dropping audio")
+        
+        if pyaudio:
+            return (None, pyaudio.paContinue)
+        else:
+            return (None, 0)
+    
+    async def read_audio(self):
+        """Read audio data from local microphone."""
+        if not self.input_enabled:
+            return None
+        
+        try:
+            audio_data = await asyncio.wait_for(self.input_queue.get(), timeout=0.1)
+            return audio_data
+        except asyncio.TimeoutError:
+            return None
     
     async def write_audio(self, audio_data: bytes):
         """Write audio data to local speakers."""
-        if self.enabled and self.stream:
+        if self.enabled and self.output_stream:
             try:
                 # PyAudio write is blocking, so run in thread pool
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, self.stream.write, audio_data)
+                await loop.run_in_executor(None, self.output_stream.write, audio_data)
             except Exception as e:
                 logger.error(f"Error writing to local audio: {e}")
     
     def close(self):
-        """Close the local audio stream."""
-        if self.stream:
-            self.stream.stop_stream()
-            self.stream.close()
-            self.stream = None
+        """Close the local audio streams."""
+        if self.input_stream:
+            self.input_stream.stop_stream()
+            self.input_stream.close()
+            self.input_stream = None
+        if self.output_stream:
+            self.output_stream.stop_stream()
+            self.output_stream.close()
+            self.output_stream = None
         if self.pyaudio_instance:
             self.pyaudio_instance.terminate()
             self.pyaudio_instance = None
-        logger.info("Local audio output closed")
+        logger.info("Local audio input/output closed")
 
 
 class DogClient:
     """Client that manages the Go2 WebRTC connection and audio streaming."""
     
-    def __init__(self, go2_connection, callbacks: DogCallbacks, local_audio_enabled=False, local_audio_device=None):
+    def __init__(self, go2_connection, callbacks: DogCallbacks, local_audio_enabled=False, local_audio_device=None, local_microphone_device=None):
         self._go2_connection = go2_connection
         self._callbacks = callbacks
         self._audio_queue = asyncio.Queue()
@@ -162,13 +214,16 @@ class DogClient:
         self._in_sample_rate = None
         self._out_sample_rate = None
         self._connected = False
+        self._local_microphone_task = None
         
-        # Local audio manager for hybrid output
+        # Local audio manager for hybrid input/output
         self._local_audio = LocalAudioManager(
             enabled=local_audio_enabled,
             sample_rate=48000,  # Match robot output
             channels=2,
-            device_id=local_audio_device
+            output_device_id=local_audio_device,
+            input_device_id=local_microphone_device,
+            input_enabled=local_audio_enabled  # Enable microphone input when local audio is enabled
         )
         
     async def setup(self, params: TransportParams, frame: StartFrame):
@@ -217,8 +272,21 @@ class DogClient:
             
             # Enable audio channels
             self._go2_connection.audio.switchAudioChannel(True)
-            # Register audio callback
-            self._go2_connection.audio.add_track_callback(self._handle_robot_audio)
+            
+            # Configure audio input source based on local audio settings
+            if self._local_audio.input_enabled:
+                # Use local microphone only - disable robot microphone
+                logger.info("DogClient: Using local microphone - robot microphone disabled")
+                # Start local microphone task
+                if not self._local_microphone_task:
+                    self._local_microphone_task = asyncio.create_task(self._handle_local_microphone())
+                    logger.info("DogClient: Local microphone task started")
+            else:
+                # Use robot microphone only
+                logger.info("DogClient: Using robot microphone - local microphone disabled")
+                # Register audio callback for robot microphone
+                self._go2_connection.audio.add_track_callback(self._handle_robot_audio)
+            
             self._running = True
             self._connected = True
             # Emit connected event
@@ -232,6 +300,16 @@ class DogClient:
             return
         self._running = False
         self._connected = False
+        
+        # Stop local microphone task
+        if self._local_microphone_task:
+            self._local_microphone_task.cancel()
+            try:
+                await self._local_microphone_task
+            except asyncio.CancelledError:
+                pass
+            self._local_microphone_task = None
+            logger.info("DogClient: Local microphone task stopped")
         
         # Close local audio
         if self._local_audio:
@@ -272,6 +350,39 @@ class DogClient:
             
         except Exception as e:
             logger.error(f"DogClient: Error processing robot audio: {e}")
+    
+    async def _handle_local_microphone(self):
+        """Handle incoming audio from local microphone."""
+        logger.info("DogClient: Local microphone handler started")
+        
+        while self._running and self._local_audio.input_enabled:
+            try:
+                # Read audio from local microphone
+                audio_data = await self._local_audio.read_audio()
+                
+                if audio_data:
+                    # Convert bytes to numpy array
+                    audio_array = np.frombuffer(audio_data, dtype=np.int16)
+                    
+                    # Create Pipecat audio frame (already 16kHz mono from LocalAudioManager)
+                    audio_frame = InputAudioRawFrame(
+                        audio=audio_array.tobytes(),
+                        sample_rate=16000,
+                        num_channels=1
+                    )
+                    
+                    # Queue the frame for processing
+                    await self._audio_queue.put(audio_frame)
+                    
+                else:
+                    # Small delay to prevent busy waiting
+                    await asyncio.sleep(0.01)
+                    
+            except Exception as e:
+                logger.error(f"DogClient: Error processing local microphone audio: {e}")
+                await asyncio.sleep(0.1)
+        
+        logger.info("DogClient: Local microphone handler stopped")
             
     async def read_audio_frame(self):
         """Generator that yields audio frames from the robot."""
@@ -481,6 +592,7 @@ class DogTransport(BaseTransport):
         output_name: Optional[str] = None,
         local_audio_enabled: bool = False,
         local_audio_device: Optional[int] = None,
+        local_microphone_device: Optional[int] = None,
     ):
         """
         Initialize the DogTransport.
@@ -490,8 +602,9 @@ class DogTransport(BaseTransport):
             params: Transport parameters (audio settings, VAD, etc.)
             input_name: Optional name for the input transport
             output_name: Optional name for the output transport
-            local_audio_enabled: Enable local computer speaker output
+            local_audio_enabled: Enable local computer speaker output and microphone input
             local_audio_device: PyAudio device ID for local output (None for default)
+            local_microphone_device: PyAudio device ID for local input (None for default)
         """
         super().__init__(input_name=input_name, output_name=output_name)
         
@@ -499,6 +612,7 @@ class DogTransport(BaseTransport):
         self._go2_connection = go2_connection
         self._local_audio_enabled = local_audio_enabled
         self._local_audio_device = local_audio_device
+        self._local_microphone_device = local_microphone_device
         
         self._callbacks = DogCallbacks(
             on_app_message=self._on_app_message,
@@ -512,7 +626,8 @@ class DogTransport(BaseTransport):
             go2_connection, 
             self._callbacks,
             local_audio_enabled=local_audio_enabled,
-            local_audio_device=local_audio_device
+            local_audio_device=local_audio_device,
+            local_microphone_device=local_microphone_device
         )
         
         self._input: Optional[DogInputTransport] = None
@@ -526,10 +641,11 @@ class DogTransport(BaseTransport):
         
         # Log configuration
         if local_audio_enabled:
-            device_str = f" (device {local_audio_device})" if local_audio_device is not None else " (default device)"
-            logger.info(f"DogTransport: Local audio output enabled - Computer speakers only{device_str}")
+            output_device_str = f" (device {local_audio_device})" if local_audio_device is not None else " (default device)"
+            input_device_str = f" (device {local_microphone_device})" if local_microphone_device is not None else " (default device)"
+            logger.info(f"DogTransport: Local audio enabled - Computer speakers{output_device_str} and microphone{input_device_str}")
         else:
-            logger.info("DogTransport: Robot audio output enabled - Robot speakers only")
+            logger.info("DogTransport: Robot audio enabled - Robot speakers and microphone only")
         
     def input(self) -> DogInputTransport:
         """Get the input transport."""

@@ -19,6 +19,11 @@ Environment Variables Required:
     CARTESIA_API_KEY - Your Cartesia API key (for TTS)
     DEEPGRAM_API_KEY - Your Deepgram API key (for STT)
     GO2_SERIAL_NUMBER - Your robot's serial number (or GO2_ROBOT_IP)
+
+Environment Variables Optional:
+    LOCAL_AUDIO_ENABLED - Set to "true" to use computer speakers and microphone
+    LOCAL_AUDIO_DEVICE - PyAudio device ID for local speakers (default: system default)
+    LOCAL_MICROPHONE_DEVICE - PyAudio device ID for local microphone (default: system default)
 """
 
 import asyncio
@@ -111,15 +116,26 @@ async def main():
         logger.error("Please set these in your .env file or environment")
         sys.exit(1)
     
-    # Configure local audio output
+    # Configure local audio input/output
     local_audio_enabled = os.getenv("LOCAL_AUDIO_ENABLED", "false").lower() == "true"
     local_audio_device = None
+    local_microphone_device = None
+    
+    # Configure local audio output device
     local_audio_device_env = os.getenv("LOCAL_AUDIO_DEVICE")
     if local_audio_device_env:
         try:
             local_audio_device = int(local_audio_device_env)
         except ValueError:
             logger.warning("Invalid LOCAL_AUDIO_DEVICE value, using default device")
+    
+    # Configure local microphone input device
+    local_microphone_device_env = os.getenv("LOCAL_MICROPHONE_DEVICE")
+    if local_microphone_device_env:
+        try:
+            local_microphone_device = int(local_microphone_device_env)
+        except ValueError:
+            logger.warning("Invalid LOCAL_MICROPHONE_DEVICE value, using default device")
     
     # Configure robot connection using serial number from environment
     serial_number = os.getenv("GO2_SERIAL_NUMBER")
@@ -163,14 +179,18 @@ async def main():
             ),
             local_audio_enabled=local_audio_enabled,
             local_audio_device=local_audio_device,
+            local_microphone_device=local_microphone_device,
         )
         
         # Log audio configuration
         if local_audio_enabled:
-            device_str = f" (device {local_audio_device})" if local_audio_device is not None else " (default device)"
-            logger.info(f"Audio output: Local computer speakers{device_str}")
+            output_device_str = f" (device {local_audio_device})" if local_audio_device is not None else " (system default)"
+            input_device_str = f" (device {local_microphone_device})" if local_microphone_device is not None else " (system default)"
+            logger.info(f"Audio input: Local computer microphone{input_device_str} - Robot microphone DISABLED")
+            logger.info(f"Audio output: Local computer speakers{output_device_str} - Robot speakers DISABLED")
         else:
-            logger.info("Audio output: Robot speakers")
+            logger.info("Audio input: Robot microphone - Local microphone DISABLED")
+            logger.info("Audio output: Robot speakers - Local speakers DISABLED")
         
         # Initialize services
         deepgram_key = os.getenv("DEEPGRAM_API_KEY")
