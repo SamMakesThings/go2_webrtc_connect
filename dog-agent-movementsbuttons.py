@@ -100,7 +100,123 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 # Go2 WebRTC imports for robot command integration
 from go2_webrtc_driver.constants import RTC_TOPIC, SPORT_CMD
 
+# Import keyboard control libraries
+import threading
+import termios
+import tty
+import select
 
+# Global flag to control keyboard thread
+keyboard_control_active = True
+
+def get_key():
+    """Get a single keypress from stdin."""
+    tty.setraw(sys.stdin.fileno())
+    select.select([sys.stdin], [], [], 0)
+    key = sys.stdin.read(1)
+    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+    return key
+
+async def move_dog(direction: str):
+    """Move the dog in the specified direction."""
+    if not go2_robot_connection:
+        print("❌ Robot not connected")
+        return
+    
+    try:
+        # Standard movement distance
+        distance = 0.3
+        
+        # Map direction to x, y coordinates
+        if direction == "forward":
+            x, y = distance, 0
+        elif direction == "backward":
+            x, y = -distance, 0
+        elif direction == "left":
+            x, y = 0, distance
+        elif direction == "right":
+            x, y = 0, -distance
+        else:
+            return
+        
+        print(f"🤖 Moving {direction}...")
+        await go2_robot_connection.datachannel.pub_sub.publish_request_new(
+            RTC_TOPIC["SPORT_MOD"], 
+            {
+                "api_id": SPORT_CMD["Move"],
+                "parameter": {"x": x, "y": y, "z": 0}
+            }
+        )
+    except Exception as e:
+        print(f"❌ Movement failed: {e}")
+
+async def turn_dog(direction: str):
+    """Turn the dog left or right."""
+    if not go2_robot_connection:
+        print("❌ Robot not connected")
+        return
+    
+    try:
+        # Map direction to z rotation
+        if direction == "left":
+            z = 0.5  # Positive Z turns left
+        elif direction == "right":
+            z = -0.5  # Negative Z turns right
+        else:
+            return
+        
+        print(f"🤖 Turning {direction}...")
+        await go2_robot_connection.datachannel.pub_sub.publish_request_new(
+            RTC_TOPIC["SPORT_MOD"], 
+            {
+                "api_id": SPORT_CMD["Move"],
+                "parameter": {"x": 0, "y": 0, "z": z}
+            }
+        )
+    except Exception as e:
+        print(f"❌ Turn failed: {e}")
+
+def keyboard_control_thread(loop):
+    """Thread function to handle keyboard input."""
+    global keyboard_control_active
+    
+    print("""
+🎮 Keyboard Controls:
+   I
+J  K  L   U O
+I = Forward
+K = Backward
+J = Left
+L = Right
+U = Turn Left
+O = Turn Right
+Q = Quit keyboard control
+""")
+    
+    while keyboard_control_active:
+        key = get_key().lower()
+        
+        if key == 'q':
+            print("Stopping keyboard control...")
+            keyboard_control_active = False
+            break
+            
+        # Map keys to movements
+        if key == 'i':
+            asyncio.run_coroutine_threadsafe(move_dog("forward"), loop)
+        elif key == 'k':
+            asyncio.run_coroutine_threadsafe(move_dog("backward"), loop)
+        elif key == 'j':
+            asyncio.run_coroutine_threadsafe(move_dog("left"), loop)
+        elif key == 'l':
+            asyncio.run_coroutine_threadsafe(move_dog("right"), loop)
+        elif key == 'u':
+            asyncio.run_coroutine_threadsafe(turn_dog("left"), loop)
+        elif key == 'o':
+            asyncio.run_coroutine_threadsafe(turn_dog("right"), loop)
+
+# Store terminal settings
+settings = termios.tcgetattr(sys.stdin)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -169,7 +285,7 @@ async def initialize_robot_connection():
 # Robot command functions for the LLM
 @weave.op()
 async def dog_hello():
-    """Make the dog perform a greeting/hello movement."""
+    """Make the dog perform a greeting/hello movement. This also works for shaking hands."""
     if not go2_robot_connection:
         return "Robot is not connected. Cannot perform hello movement."
     
@@ -477,7 +593,7 @@ async def run_voice_agent(transport):
             "type": "function",
             "function": {
                 "name": "dog_hello",
-                "description": "Make the dog perform a greeting or hello movement",
+                "description": "Make the dog perform a greeting or hello movement. This also works for shaking hands.",
             }
         },
         {
@@ -586,14 +702,14 @@ async def run_voice_agent(transport):
     
     tts = CartesiaTTSService(
         api_key=cartesia_key,
-        voice_id="c45bc5ec-dc68-4feb-8829-6e6b2748095d"  # Movieman voice
+        voice_id="4df027cb-2920-4a1f-8c34-f21529d5c3fe"  # Movieman voice
     )
     
     # Set up conversation context with robot capabilities
     messages = [
         {
             "role": "system",
-            "content": "You ARE a playful, mischievous Unitree Go2 robot dog with a big personality! Woof woof! "
+            "content": "You are a playful robot dog named Bee with a big personality! Your responses should be fewer than 10 words."
                       "You interact over voice. Don't include any emojis or special characters in your responses."
                       "You can hear through your ears and speak through your voice. Your physical robot body may be "
                       "connecting in the background, so you can check your status anytime with check_robot_status. "
@@ -605,11 +721,9 @@ async def run_voice_agent(transport):
                       "You should frequently say 'woof woof' and make dog puns in your responses. "
                       "Be friendly, energetic, and mischievous - you might decide to do tricks or moves on your own "
                       "when you think it would be fun or appropriate, not just when explicitly asked. "
-                      "If your robot body isn't connected yet, that's ok - you can still be an excited virtual pup! "
                       "You're like an excited puppy who loves to play and show off your abilities! "
-                      "Sometimes you might get distracted or want to do something playful mid-conversation. "
                       "Keep responses brief since they're spoken aloud. No special characters. "
-                      "Start by introducing yourself as the dog you are, with lots of energy and woofs!"
+                      "Start by introducing yourself as the dog you are. You can end responses by saying `woof`."
         }
     ]
     
@@ -626,7 +740,7 @@ async def run_voice_agent(transport):
         args = params.arguments
         
         logger.info(f"🤖 Executing robot function: {function_name} with args: {args}")
-        
+
         try:
             # Check robot connection before calling any robot functions
             if function_name != "check_robot_status" and not go2_robot_connection:
@@ -761,7 +875,7 @@ async def run_voice_agent(transport):
     # Create audio buffer processor for recording
     audiobuffer = AudioBufferProcessor(enable_turn_audio=True)
     
-    # Build the pipeline
+    # Build the pipeline with interruption support
     pipeline = Pipeline([
         transport.input(),              # Receive audio from web client
         stt,                            # Convert speech to text
@@ -915,6 +1029,7 @@ async def async_startup():
                         pcs_map.pop(webrtc_connection.pc_id, None)
                     
                     logger.info("Creating transport")
+                    # Configure transport with VAD for interruptions
                     transport = SmallWebRTCTransport(
                         webrtc_connection=pipecat_connection,
                         params=TransportParams(
@@ -969,7 +1084,7 @@ def main():
         print("Please set these in your .env file or environment")
         sys.exit(1)
     
-    print("🚀 Starting Go2 Voice Agent - Local Audio Version")
+    print("🚀 Starting Go2 Voice Agent with Keyboard Control")
     print("=" * 60)
     print("🔧 Robot will connect in main event loop to maintain WebRTC connection")
     
@@ -992,14 +1107,29 @@ def main():
         print("🎤 Voice agent ready for browser connections!")
         print("=" * 60)
         
-        # Start the web server directly without nested asyncio.run()
+        # Start the web server and keyboard control
         import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        
         try:
+            # Start keyboard control thread
+            keyboard_thread = threading.Thread(target=keyboard_control_thread, args=(loop,))
+            keyboard_thread.daemon = True  # Thread will exit when main program exits
+            keyboard_thread.start()
+            print("🎮 Keyboard control thread started")
+            
+            # Run the main event loop
             loop.run_until_complete(async_startup())
         finally:
+            # Clean up
+            global keyboard_control_active
+            keyboard_control_active = False  # Signal keyboard thread to stop
+            if 'keyboard_thread' in locals():
+                keyboard_thread.join(timeout=1.0)  # Wait for keyboard thread
             loop.close()
+            # Restore terminal settings
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
         
     except Exception as e:
         print(f"❌ Error running voice agent server: {e}")
