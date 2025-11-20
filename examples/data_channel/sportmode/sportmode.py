@@ -11,8 +11,8 @@ logging.basicConfig(level=logging.FATAL)
 async def main():
     try:
         # Choose a connection method (uncomment the correct one)
-        conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.8.181")
-        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000XXXXXXXX")
+        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.8.181")
+        conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000P4CB56C5")
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D2000XXXXXXXX", username="email@gmail.com", password="pass")
         # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalAP)
 
@@ -113,16 +113,16 @@ async def main():
             }
         )
 
-        # await asyncio.sleep(5)
+        await asyncio.sleep(5)
         # Perform a backflip
-        # print(f"Performing BackFlip")
-        # await conn.datachannel.pub_sub.publish_request_new(
-        #     RTC_TOPIC["SPORT_MOD"], 
-        #     {
-        #         "api_id": SPORT_CMD["BackFlip"],
-        #         "parameter": {"data": True}
-        #     }
-        # )
+        print(f"Performing BackFlip")
+        await conn.datachannel.pub_sub.publish_request_new(
+            RTC_TOPIC["SPORT_MOD"], 
+            {
+                "api_id": SPORT_CMD["BackFlip"],
+                "parameter": {"data": True}
+            }
+        )
 
         # Keep the program running for a while
         await asyncio.sleep(3600)

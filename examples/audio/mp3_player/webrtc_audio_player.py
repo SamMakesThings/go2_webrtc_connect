@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 async def main():
     try:
         # Establish WebRTC connection
-        conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.137.120")
+        # conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, ip="192.168.137.120")
+        conn = Go2WebRTCConnection(WebRTCConnectionMethod.LocalSTA, serialNumber="B42D2000P4CB56C5")
         await conn.connect()
         logger.info("WebRTC connection established")
 
