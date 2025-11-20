@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Go2 Robot Dog Controller</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .status {
+            text-align: center;
+            padding: 12px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 2px solid #c3e6cb;
+        }
+
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 2px solid #f5c6cb;
+        }
+
+        .controls-section {
+            margin-bottom: 30px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #444;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 8px;
+        }
+
+        .movement-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            max-width: 300px;
+            margin: 0 auto 20px;
+        }
+
+        .control-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+            padding: 20px;
+            border-radius: 12px;
+            font-size: 24px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .control-button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .control-button:active:not(:disabled) {
+            transform: translateY(0);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+        }
+
+        .control-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .control-button.pressed {
+            background: linear-gradient(135deg, #48c6ef 0%, #6f86d6 100%);
+        }
+
+        .empty-cell {
+            background: transparent;
+        }
+
+        .tricks-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .trick-button {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            border: none;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .trick-button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .trick-button:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        .trick-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .mode-buttons {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .mode-button {
+            flex: 1;
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            border: none;
+            color: white;
+            padding: 12px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .mode-button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .mode-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .feedback {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            font-size: 14px;
+            color: #333;
+            min-height: 50px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .feedback .message {
+            margin-bottom: 5px;
+            padding: 5px;
+        }
+
+        .feedback .message.success {
+            color: #155724;
+        }
+
+        .feedback .message.error {
+            color: #721c24;
+        }
+
+        .keyboard-hint {
+            text-align: center;
+            font-size: 12px;
+            color: #999;
+            margin-top: 20px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .keyboard-hint kbd {
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-family: monospace;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .loading {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🐕 Go2 Robot Dog Controller</h1>
+        <div class="subtitle">Manual Control & Voice Agent Interface</div>
+
+        <div id="status" class="status disconnected">
+            🔴 Checking connection...
+        </div>
+
+        <!-- Movement Controls -->
+        <div class="controls-section">
+            <div class="section-title">🎮 Movement Controls</div>
+            <div class="movement-grid">
+                <div class="empty-cell"></div>
+                <button class="control-button" onclick="sendCommand('move', 'forward')" title="Forward (W)">
+                    ⬆️
+                </button>
+                <div class="empty-cell"></div>
+
+                <button class="control-button" onclick="sendCommand('turn', 'left')" title="Turn Left (Q)">
+                    ↰
+                </button>
+                <button class="control-button" onclick="sendCommand('move', 'backward')" title="Backward (S)">
+                    ⬇️
+                </button>
+                <button class="control-button" onclick="sendCommand('turn', 'right')" title="Turn Right (E)">
+                    ↱
+                </button>
+
+                <button class="control-button" onclick="sendCommand('move', 'left')" title="Strafe Left (A)">
+                    ⬅️
+                </button>
+                <button class="control-button" onclick="sendCommand('stop')" title="Stop (Space)">
+                    ⏹️
+                </button>
+                <button class="control-button" onclick="sendCommand('move', 'right')" title="Strafe Right (D)">
+                    ➡️
+                </button>
+            </div>
+        </div>
+
+        <!-- Posture Controls -->
+        <div class="controls-section">
+            <div class="section-title">🦴 Posture</div>
+            <div class="tricks-grid">
+                <button class="trick-button" onclick="sendCommand('stand')">
+                    Stand Up
+                </button>
+                <button class="trick-button" onclick="sendCommand('sit')">
+                    Sit Down
+                </button>
+            </div>
+        </div>
+
+        <!-- Trick Controls -->
+        <div class="controls-section">
+            <div class="section-title">✨ Tricks</div>
+            <div class="tricks-grid">
+                <button class="trick-button" onclick="sendCommand('hello')">
+                    👋 Hello
+                </button>
+                <button class="trick-button" onclick="sendCommand('stretch')">
+                    🧘 Stretch
+                </button>
+                <button class="trick-button" onclick="sendCommand('wiggle_hips')">
+                    💃 Wiggle Hips
+                </button>
+                <button class="trick-button" onclick="sendCommand('finger_heart')">
+                    ❤️ Finger Heart
+                </button>
+            </div>
+        </div>
+
+        <!-- Mode Controls -->
+        <div class="controls-section">
+            <div class="section-title">⚙️ Mode</div>
+            <div class="mode-buttons">
+                <button class="mode-button" onclick="sendCommand('mode', 'normal')">
+                    Normal Mode
+                </button>
+                <button class="mode-button" onclick="sendCommand('mode', 'ai')">
+                    AI Mode
+                </button>
+            </div>
+        </div>
+
+        <!-- Feedback Area -->
+        <div class="feedback" id="feedback">
+            <div class="message">Ready to control robot dog! 🐕</div>
+        </div>
+
+        <!-- Keyboard Hints -->
+        <div class="keyboard-hint">
+            💡 Keyboard shortcuts: <kbd>W</kbd> Forward, <kbd>A</kbd> Left, <kbd>S</kbd> Back, <kbd>D</kbd> Right<br>
+            <kbd>Q</kbd> Turn Left, <kbd>E</kbd> Turn Right, <kbd>Space</kbd> Stop
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '';  // Same origin
+        let isConnected = false;
+        const feedbackEl = document.getElementById('feedback');
+        const statusEl = document.getElementById('status');
+
+        // Check server status on load
+        async function checkStatus() {
+            try {
+                const response = await fetch('/api/robot/status');
+                const data = await response.json();
+                isConnected = data.connected;
+                updateStatus(isConnected);
+                addFeedback(data.message || 'Connected to server', 'success');
+            } catch (error) {
+                isConnected = false;
+                updateStatus(false);
+                addFeedback('Cannot connect to server', 'error');
+            }
+        }
+
+        function updateStatus(connected) {
+            if (connected) {
+                statusEl.className = 'status connected';
+                statusEl.textContent = '🟢 Robot Connected';
+            } else {
+                statusEl.className = 'status disconnected';
+                statusEl.textContent = '🔴 Robot Disconnected';
+            }
+
+            // Disable buttons if not connected
+            const buttons = document.querySelectorAll('.control-button, .trick-button, .mode-button');
+            buttons.forEach(btn => {
+                btn.disabled = !connected;
+            });
+        }
+
+        async function sendCommand(action, param = null) {
+            if (!isConnected) {
+                addFeedback('Robot not connected!', 'error');
+                return;
+            }
+
+            const button = event.target;
+            button.classList.add('pressed');
+
+            try {
+                const endpoint = `/api/robot/${action}`;
+                const body = param ? { param } : {};
+
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(body)
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    addFeedback(data.message || `Command sent: ${action}`, 'success');
+                } else {
+                    addFeedback(data.error || 'Command failed', 'error');
+                }
+            } catch (error) {
+                addFeedback(`Error: ${error.message}`, 'error');
+            } finally {
+                setTimeout(() => button.classList.remove('pressed'), 200);
+            }
+        }
+
+        function addFeedback(message, type = 'success') {
+            const msgEl = document.createElement('div');
+            msgEl.className = `message ${type}`;
+            msgEl.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            feedbackEl.insertBefore(msgEl, feedbackEl.firstChild);
+
+            // Keep only last 10 messages
+            while (feedbackEl.children.length > 10) {
+                feedbackEl.removeChild(feedbackEl.lastChild);
+            }
+        }
+
+        // Keyboard controls
+        const keyMap = {
+            'w': () => sendCommand('move', 'forward'),
+            'a': () => sendCommand('move', 'left'),
+            's': () => sendCommand('move', 'backward'),
+            'd': () => sendCommand('move', 'right'),
+            'q': () => sendCommand('turn', 'left'),
+            'e': () => sendCommand('turn', 'right'),
+            ' ': () => sendCommand('stop')
+        };
+
+        let keyPressed = new Set();
+
+        document.addEventListener('keydown', (e) => {
+            const key = e.key.toLowerCase();
+            if (keyMap[key] && !keyPressed.has(key)) {
+                e.preventDefault();
+                keyPressed.add(key);
+                keyMap[key]();
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            keyPressed.delete(key);
+        });
+
+        // Initial status check
+        checkStatus();
+
+        // Refresh status every 5 seconds
+        setInterval(checkStatus, 5000);
+    </script>
+</body>
+</html>
