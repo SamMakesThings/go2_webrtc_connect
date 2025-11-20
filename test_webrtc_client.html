@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple WebRTC Test Client</title>
+</head>
+<body>
+    <h1>Simple WebRTC Test Client</h1>
+    <button id="connectBtn">Connect</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+    <br><br>
+    <div id="status">Not connected</div>
+    <br>
+    <div id="logs"></div>
+
+    <script>
+        let pc = null;
+        let localStream = null;
+        
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const statusDiv = document.getElementById('status');
+        const logsDiv = document.getElementById('logs');
+        
+        function log(message) {
+            console.log(message);
+            logsDiv.innerHTML += message + '<br>';
+        }
+        
+        connectBtn.addEventListener('click', async () => {
+            try {
+                log('Starting connection...');
+                statusDiv.textContent = 'Connecting...';
+                
+                // Get user media
+                log('Requesting microphone access...');
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: true, 
+                    video: false 
+                });
+                log('Got microphone access');
+                
+                // Create peer connection
+                pc = new RTCPeerConnection({
+                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                });
+                
+                // Add local stream
+                localStream.getTracks().forEach(track => {
+                    pc.addTrack(track, localStream);
+                });
+                
+                // Handle remote stream
+                pc.ontrack = (event) => {
+                    log('Received remote audio track');
+                    const audio = new Audio();
+                    audio.srcObject = event.streams[0];
+                    audio.play();
+                };
+                
+                // Create offer
+                log('Creating offer...');
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                
+                // Send offer to server
+                log('Sending offer to server...');
+                const response = await fetch('/api/offer', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sdp: offer.sdp,
+                        type: offer.type,
+                        pc_id: null
+                    }),
+                });
+                
+                const answer = await response.json();
+                log('Received answer from server');
+                
+                // Set remote description
+                await pc.setRemoteDescription(new RTCSessionDescription({
+                    sdp: answer.sdp,
+                    type: answer.type
+                }));
+                
+                log('Connected successfully!');
+                statusDiv.textContent = 'Connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                
+            } catch (error) {
+                log('Error: ' + error.message);
+                statusDiv.textContent = 'Failed to connect';
+            }
+        });
+        
+        disconnectBtn.addEventListener('click', () => {
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            log('Disconnected');
+            statusDiv.textContent = 'Disconnected';
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
+        });
+    </script>
+</body>
+</html> 

@@ -100,13 +100,14 @@ class WebRTCDataChannel:
             await self.validaton.handle_err_response(msg)
         
 
-    async def wait_datachannel_open(self, timeout=5):
+    async def wait_datachannel_open(self, timeout=20):
         """Waits for the data channel to open asynchronously."""
         try:
             await asyncio.wait_for(self._wait_for_open(), timeout)
         except asyncio.TimeoutError:
             print("Data channel did not open in time")
-            sys.exit(1)
+            # Don't exit the entire process, just return and let connection fail gracefully
+            return False
 
     async def _wait_for_open(self):
         """Internal function that waits for the data channel to be opened."""

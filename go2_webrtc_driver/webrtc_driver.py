@@ -190,7 +190,9 @@ class Go2WebRTCConnection:
         remote_sdp = RTCSessionDescription(sdp=peer_answer['sdp'], type=peer_answer['type']) 
         await self.pc.setRemoteDescription(remote_sdp)
    
-        await self.datachannel.wait_datachannel_open()
+        result = await self.datachannel.wait_datachannel_open()
+        if result is False:
+            raise Exception("Data channel failed to open within timeout")
 
     
     async def get_answer_from_remote_peer(self, pc, turn_server_info):
