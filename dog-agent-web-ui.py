@@ -886,10 +886,9 @@ async def run_voice_agent(transport):
         # Call original handler first - THIS is what sends CancelFrame and manages bot speaking state
         result = await original_handle_interruption(*args, **kwargs)
 
-        # Clear the WebRTC audio track queue AND check ALL internal states
+        # Clear the WebRTC audio track queue AND reset MediaSender bot speaking state
         try:
             output_transport = transport.output()
-            input_transport = transport.input()
 
             # Clear WebRTC audio buffer
             if hasattr(output_transport, '_client') and hasattr(output_transport._client, '_audio_output_track'):
@@ -899,34 +898,23 @@ async def run_voice_agent(transport):
                     audio_track._chunk_queue.clear()
                     logger.info("✅ Audio queue cleared successfully!")
 
-            # DEBUG: The key insight is "Bot started speaking" at base_output.py:599
-            # This tells us output_transport has the bot speaking state!
-            logger.info(f"🔍 Dumping ALL output transport private attributes...")
+            # KEY INSIGHT: Bot speaking state is in MediaSender inside _media_senders!
+            # The log "Bot started speaking" at base_output.py:599 is from MediaSender
+            if hasattr(output_transport, '_media_senders'):
+                logger.info("🔍 Found _media_senders, checking for bot speaking state...")
+                for key, media_sender in output_transport._media_senders.items():
+                    logger.info(f"🔍 MediaSender key: {key}, type: {type(media_sender)}")
 
-            # Get all private attributes (start with _ but not __)
-            private_attrs = {}
-            for attr in dir(output_transport):
-                if attr.startswith('_') and not attr.startswith('__'):
-                    try:
-                        value = getattr(output_transport, attr)
-                        # Only log non-callable, simple types
-                        if not callable(value):
-                            private_attrs[attr] = value
-                    except Exception:
-                        private_attrs[attr] = "ERROR_GETTING_VALUE"
+                    # Check if this MediaSender has bot speaking state
+                    if hasattr(media_sender, '_bot_speaking'):
+                        logger.info(f"🔍 FOUND _bot_speaking in MediaSender = {media_sender._bot_speaking}")
+                        media_sender._bot_speaking = False
+                        logger.info("✅ Reset MediaSender._bot_speaking = False")
 
-            logger.info(f"🔍 Output transport private attributes: {private_attrs}")
-
-            # Try to manually reset any speaking state we find
-            if hasattr(output_transport, '_bot_speaking') and not callable(getattr(output_transport, '_bot_speaking')):
-                logger.info(f"🔍 FOUND _bot_speaking = {output_transport._bot_speaking}")
-                output_transport._bot_speaking = False
-                logger.info("✅ Reset output_transport._bot_speaking = False")
-
-            # Also try calling _bot_stopped_speaking if it's a method
-            if hasattr(output_transport, '_bot_stopped_speaking') and callable(getattr(output_transport, '_bot_stopped_speaking')):
-                await output_transport._bot_stopped_speaking()
-                logger.info("✅ Called output_transport._bot_stopped_speaking()")
+                    # Also try calling _bot_stopped_speaking if it exists
+                    if hasattr(media_sender, '_bot_stopped_speaking') and callable(getattr(media_sender, '_bot_stopped_speaking')):
+                        await media_sender._bot_stopped_speaking()
+                        logger.info("✅ Called MediaSender._bot_stopped_speaking()")
 
         except Exception as e:
             logger.error(f"❌ Error in interrupt handler: {e}")
