@@ -873,45 +873,37 @@ async def run_voice_agent(transport):
         await task.cancel()
 
     # ADD INTERRUPT HANDLING AT TRANSPORT LEVEL
-    # Hook into the transport's input to detect interruptions and clear audio queues
+    # Monkey-patch the transport's input to detect interruptions and clear audio queues
     original_input = transport.input()
 
-    class InterruptAwareInput(original_input.__class__):
-        def __init__(self, original_input_instance):
-            # Copy all attributes from the original instance
-            super().__init__(original_input_instance._client, original_input_instance._params, name=getattr(original_input_instance, '_name', None))
-            self.__dict__.update(original_input_instance.__dict__)
-            self._original_handle_user_interruption = getattr(self, '_handle_user_interruption', None)
+    # Save the original handler
+    original_handle_interruption = original_input._handle_user_interruption
 
-        async def _handle_user_interruption(self, *args, **kwargs):
-            """Override to clear audio queues when user interruption is detected."""
-            logger.info("🔥 INTERRUPT DETECTED - Clearing all audio queues!")
+    async def patched_handle_user_interruption(self, *args, **kwargs):
+        """Patched handler to clear audio queues when user interruption is detected."""
+        logger.info("🔥 INTERRUPT DETECTED - Clearing all audio queues!")
 
-            result = None
-            # Call original handler first
-            if self._original_handle_user_interruption:
-                result = await self._original_handle_user_interruption(*args, **kwargs)
+        # Call original handler first
+        result = await original_handle_interruption(*args, **kwargs)
 
-            # Clear the WebRTC audio track queue
-            try:
-                output_transport = transport.output()
-                if hasattr(output_transport, '_client') and hasattr(output_transport._client, '_audio_output_track'):
-                    audio_track = output_transport._client._audio_output_track
-                    if hasattr(audio_track, '_chunk_queue'):
-                        logger.info(f"🧹 Clearing {len(audio_track._chunk_queue)} audio chunks from WebRTC track")
-                        audio_track._chunk_queue.clear()
+        # Clear the WebRTC audio track queue
+        try:
+            output_transport = transport.output()
+            if hasattr(output_transport, '_client') and hasattr(output_transport._client, '_audio_output_track'):
+                audio_track = output_transport._client._audio_output_track
+                if hasattr(audio_track, '_chunk_queue'):
+                    logger.info(f"🧹 Clearing {len(audio_track._chunk_queue)} audio chunks from WebRTC track")
+                    audio_track._chunk_queue.clear()
+                    logger.info("✅ Audio queue cleared successfully!")
+        except Exception as e:
+            logger.error(f"❌ Error clearing audio queue: {e}")
 
-                        # Also resolve any pending futures to prevent hanging
-                        logger.info("✅ Audio queue cleared successfully!")
-            except Exception as e:
-                logger.error(f"❌ Error clearing audio queue: {e}")
+        return result
 
-            return result
-
-    # Replace the input with our interrupt-aware version
-    interrupt_aware_input = InterruptAwareInput(original_input)
-    transport._input = interrupt_aware_input
-    logger.info("✅ Configured InterruptAwareInput to clear WebRTC audio buffers on interruption")
+    # Monkey-patch the method
+    import types
+    original_input._handle_user_interruption = types.MethodType(patched_handle_user_interruption, original_input)
+    logger.info("✅ Configured interrupt handler to clear WebRTC audio buffers on interruption")
 
     # Run the pipeline
     runner = PipelineRunner(handle_sigint=False, force_gc=True)
