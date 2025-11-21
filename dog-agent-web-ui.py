@@ -883,12 +883,13 @@ async def run_voice_agent(transport):
         """Patched handler to clear audio queues when user interruption is detected."""
         logger.info("🔥 INTERRUPT DETECTED - Clearing all audio queues!")
 
-        # Call original handler first
+        # Call original handler first - THIS is what sends CancelFrame and manages bot speaking state
         result = await original_handle_interruption(*args, **kwargs)
 
         # Clear the WebRTC audio track queue AND reset bot speaking state
         try:
             output_transport = transport.output()
+            input_transport = transport.input()
 
             # Clear WebRTC audio buffer
             if hasattr(output_transport, '_client') and hasattr(output_transport._client, '_audio_output_track'):
@@ -898,12 +899,29 @@ async def run_voice_agent(transport):
                     audio_track._chunk_queue.clear()
                     logger.info("✅ Audio queue cleared successfully!")
 
-            # Reset bot speaking state by calling _bot_stopped_speaking
-            if hasattr(output_transport, '_bot_stopped_speaking'):
-                await output_transport._bot_stopped_speaking()
-                logger.info("✅ Reset bot speaking state")
+            # DEBUG: Check what attributes control bot speaking state
+            logger.info(f"🔍 Input transport type: {type(input_transport)}")
+            logger.info(f"🔍 Input _is_bot_speaking: {getattr(input_transport, '_is_bot_speaking', 'NOT FOUND')}")
+            logger.info(f"🔍 Input _should_listen: {getattr(input_transport, '_should_listen', 'NOT FOUND')}")
+            logger.info(f"🔍 Output transport type: {type(output_transport)}")
+            logger.info(f"🔍 Output _is_speaking: {getattr(output_transport, '_is_speaking', 'NOT FOUND')}")
+
+            # Reset bot speaking state on INPUT transport (where interruption is detected)
+            if hasattr(input_transport, '_is_bot_speaking'):
+                logger.info(f"🔍 BEFORE reset: _is_bot_speaking = {input_transport._is_bot_speaking}")
+                input_transport._is_bot_speaking = False
+                logger.info("✅ Reset input transport _is_bot_speaking = False")
+
+            # Also reset on output transport if it exists
+            if hasattr(output_transport, '_is_speaking'):
+                logger.info(f"🔍 BEFORE reset: output _is_speaking = {output_transport._is_speaking}")
+                output_transport._is_speaking = False
+                logger.info("✅ Reset output transport _is_speaking = False")
+
         except Exception as e:
-            logger.error(f"❌ Error clearing audio queue: {e}")
+            logger.error(f"❌ Error in interrupt handler: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
         return result
 
