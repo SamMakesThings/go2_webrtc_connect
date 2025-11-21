@@ -886,15 +886,22 @@ async def run_voice_agent(transport):
         # Call original handler first
         result = await original_handle_interruption(*args, **kwargs)
 
-        # Clear the WebRTC audio track queue
+        # Clear the WebRTC audio track queue AND reset bot speaking state
         try:
             output_transport = transport.output()
+
+            # Clear WebRTC audio buffer
             if hasattr(output_transport, '_client') and hasattr(output_transport._client, '_audio_output_track'):
                 audio_track = output_transport._client._audio_output_track
                 if hasattr(audio_track, '_chunk_queue'):
                     logger.info(f"🧹 Clearing {len(audio_track._chunk_queue)} audio chunks from WebRTC track")
                     audio_track._chunk_queue.clear()
                     logger.info("✅ Audio queue cleared successfully!")
+
+            # Reset bot speaking state by calling _bot_stopped_speaking
+            if hasattr(output_transport, '_bot_stopped_speaking'):
+                await output_transport._bot_stopped_speaking()
+                logger.info("✅ Reset bot speaking state")
         except Exception as e:
             logger.error(f"❌ Error clearing audio queue: {e}")
 
