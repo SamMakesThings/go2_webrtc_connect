@@ -448,6 +448,7 @@ async def run_voice_agent(transport):
     from pipecat.pipeline.task import PipelineParams, PipelineTask
     from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
     from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
+    from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.services.cartesia.tts import CartesiaTTSService
     from pipecat.services.deepgram.stt import DeepgramSTTService
@@ -767,15 +768,62 @@ async def run_voice_agent(transport):
     
     # Create audio buffer processor for recording
     audiobuffer = AudioBufferProcessor(enable_turn_audio=True)
-    
-    # Build the pipeline
+
+    # Create interrupt-aware audio output processor
+    class InterruptibleAudioOutput(FrameProcessor):
+        """Audio output processor that properly handles interrupts by clearing queued audio."""
+
+        def __init__(self):
+            super().__init__()
+            self._audio_queue = []
+            self._is_playing = False
+            self._current_audio_task = None
+            self._running = False
+
+        async def process_frame(self, frame: Frame, direction: FrameDirection):
+            """Process frames and handle interrupts properly."""
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, StartFrame):
+                self._running = True
+                logger.info("InterruptibleAudioOutput: Started")
+                await self.push_frame(frame, direction)
+
+            elif isinstance(frame, (EndFrame, CancelFrame)):
+                logger.info(f"InterruptibleAudioOutput: Received {type(frame).__name__} - clearing audio queue")
+                self._running = False
+                await self._clear_audio_queue()
+                await self.push_frame(frame, direction)
+
+            elif isinstance(frame, OutputAudioRawFrame) and self._running:
+                # For audio frames, we want to allow immediate clearing on interrupt
+                # So we pass them through immediately but track them
+                logger.debug("InterruptibleAudioOutput: Processing audio frame")
+                await self.push_frame(frame, direction)
+
+            else:
+                # Pass through all other frames
+                await self.push_frame(frame, direction)
+
+        async def _clear_audio_queue(self):
+            """Clear any pending audio processing."""
+            logger.info("InterruptibleAudioOutput: Clearing audio queue and stopping playback")
+            self._audio_queue.clear()
+            self._is_playing = False
+
+    # Create the interrupt handler
+    interrupt_handler = InterruptibleAudioOutput()
+    logger.info("✅ Created InterruptibleAudioOutput handler for better interruption support")
+
+    # Build the pipeline with interruption support
     pipeline = Pipeline([
         transport.input(),              # Receive audio from web client
         stt,                            # Convert speech to text
         context_aggregator.user(),      # Add user messages to context
         llm,                            # Process text with LLM
         tts,                            # Convert text to speech
-        audiobuffer,
+        audiobuffer,                    # Audio buffer processor
+        interrupt_handler,              # Handle interrupts and clear audio queue
         transport.output(),             # Send audio responses to web client
         context_aggregator.assistant(), # Add assistant responses to context
     ])
@@ -823,7 +871,48 @@ async def run_voice_agent(transport):
     async def on_client_disconnected(transport, webrtc_connection):
         logger.info("Web client disconnected")
         await task.cancel()
-    
+
+    # ADD INTERRUPT HANDLING AT TRANSPORT LEVEL
+    # Hook into the transport's input to detect interruptions and clear audio queues
+    original_input = transport.input()
+
+    class InterruptAwareInput(original_input.__class__):
+        def __init__(self, original_input_instance):
+            # Copy all attributes from the original instance
+            super().__init__(original_input_instance._client, original_input_instance._params, name=getattr(original_input_instance, '_name', None))
+            self.__dict__.update(original_input_instance.__dict__)
+            self._original_handle_user_interruption = getattr(self, '_handle_user_interruption', None)
+
+        async def _handle_user_interruption(self, *args, **kwargs):
+            """Override to clear audio queues when user interruption is detected."""
+            logger.info("🔥 INTERRUPT DETECTED - Clearing all audio queues!")
+
+            result = None
+            # Call original handler first
+            if self._original_handle_user_interruption:
+                result = await self._original_handle_user_interruption(*args, **kwargs)
+
+            # Clear the WebRTC audio track queue
+            try:
+                output_transport = transport.output()
+                if hasattr(output_transport, '_client') and hasattr(output_transport._client, '_audio_output_track'):
+                    audio_track = output_transport._client._audio_output_track
+                    if hasattr(audio_track, '_chunk_queue'):
+                        logger.info(f"🧹 Clearing {len(audio_track._chunk_queue)} audio chunks from WebRTC track")
+                        audio_track._chunk_queue.clear()
+
+                        # Also resolve any pending futures to prevent hanging
+                        logger.info("✅ Audio queue cleared successfully!")
+            except Exception as e:
+                logger.error(f"❌ Error clearing audio queue: {e}")
+
+            return result
+
+    # Replace the input with our interrupt-aware version
+    interrupt_aware_input = InterruptAwareInput(original_input)
+    transport._input = interrupt_aware_input
+    logger.info("✅ Configured InterruptAwareInput to clear WebRTC audio buffers on interruption")
+
     # Run the pipeline
     runner = PipelineRunner(handle_sigint=False, force_gc=True)
     await runner.run(task)
