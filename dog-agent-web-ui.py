@@ -886,7 +886,7 @@ async def run_voice_agent(transport):
         # Call original handler first - THIS is what sends CancelFrame and manages bot speaking state
         result = await original_handle_interruption(*args, **kwargs)
 
-        # Clear the WebRTC audio track queue AND check aggregator state
+        # Clear the WebRTC audio track queue AND check ALL internal states
         try:
             output_transport = transport.output()
             input_transport = transport.input()
@@ -899,21 +899,34 @@ async def run_voice_agent(transport):
                     audio_track._chunk_queue.clear()
                     logger.info("✅ Audio queue cleared successfully!")
 
-            # DEBUG: Check aggregator state (where bot speaking is actually managed!)
-            logger.info(f"🔍 Checking aggregator bot speaking state...")
-            logger.info(f"🔍 Aggregator type: {type(context_aggregator)}")
-            logger.info(f"🔍 Aggregator _bot_is_speaking: {getattr(context_aggregator, '_bot_is_speaking', 'NOT FOUND')}")
+            # DEBUG: The key insight is "Bot started speaking" at base_output.py:599
+            # This tells us output_transport has the bot speaking state!
+            logger.info(f"🔍 Dumping ALL output transport private attributes...")
 
-            # Try to reset aggregator bot speaking state
-            if hasattr(context_aggregator, '_bot_is_speaking'):
-                logger.info(f"🔍 BEFORE reset: aggregator._bot_is_speaking = {context_aggregator._bot_is_speaking}")
-                context_aggregator._bot_is_speaking = False
-                logger.info("✅ Reset aggregator._bot_is_speaking = False")
-            else:
-                logger.warning("⚠️ Aggregator has no _bot_is_speaking attribute")
-                # Log all attributes that contain 'speak' or 'bot'
-                relevant_attrs = [attr for attr in dir(context_aggregator) if 'speak' in attr.lower() or 'bot' in attr.lower()]
-                logger.info(f"🔍 Aggregator attributes with 'speak' or 'bot': {relevant_attrs}")
+            # Get all private attributes (start with _ but not __)
+            private_attrs = {}
+            for attr in dir(output_transport):
+                if attr.startswith('_') and not attr.startswith('__'):
+                    try:
+                        value = getattr(output_transport, attr)
+                        # Only log non-callable, simple types
+                        if not callable(value):
+                            private_attrs[attr] = value
+                    except Exception:
+                        private_attrs[attr] = "ERROR_GETTING_VALUE"
+
+            logger.info(f"🔍 Output transport private attributes: {private_attrs}")
+
+            # Try to manually reset any speaking state we find
+            if hasattr(output_transport, '_bot_speaking') and not callable(getattr(output_transport, '_bot_speaking')):
+                logger.info(f"🔍 FOUND _bot_speaking = {output_transport._bot_speaking}")
+                output_transport._bot_speaking = False
+                logger.info("✅ Reset output_transport._bot_speaking = False")
+
+            # Also try calling _bot_stopped_speaking if it's a method
+            if hasattr(output_transport, '_bot_stopped_speaking') and callable(getattr(output_transport, '_bot_stopped_speaking')):
+                await output_transport._bot_stopped_speaking()
+                logger.info("✅ Called output_transport._bot_stopped_speaking()")
 
         except Exception as e:
             logger.error(f"❌ Error in interrupt handler: {e}")
