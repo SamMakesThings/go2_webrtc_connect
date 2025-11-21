@@ -886,7 +886,7 @@ async def run_voice_agent(transport):
         # Call original handler first - THIS is what sends CancelFrame and manages bot speaking state
         result = await original_handle_interruption(*args, **kwargs)
 
-        # Clear the WebRTC audio track queue AND reset bot speaking state
+        # Clear the WebRTC audio track queue AND check aggregator state
         try:
             output_transport = transport.output()
             input_transport = transport.input()
@@ -899,24 +899,21 @@ async def run_voice_agent(transport):
                     audio_track._chunk_queue.clear()
                     logger.info("✅ Audio queue cleared successfully!")
 
-            # DEBUG: Check what attributes control bot speaking state
-            logger.info(f"🔍 Input transport type: {type(input_transport)}")
-            logger.info(f"🔍 Input _is_bot_speaking: {getattr(input_transport, '_is_bot_speaking', 'NOT FOUND')}")
-            logger.info(f"🔍 Input _should_listen: {getattr(input_transport, '_should_listen', 'NOT FOUND')}")
-            logger.info(f"🔍 Output transport type: {type(output_transport)}")
-            logger.info(f"🔍 Output _is_speaking: {getattr(output_transport, '_is_speaking', 'NOT FOUND')}")
+            # DEBUG: Check aggregator state (where bot speaking is actually managed!)
+            logger.info(f"🔍 Checking aggregator bot speaking state...")
+            logger.info(f"🔍 Aggregator type: {type(context_aggregator)}")
+            logger.info(f"🔍 Aggregator _bot_is_speaking: {getattr(context_aggregator, '_bot_is_speaking', 'NOT FOUND')}")
 
-            # Reset bot speaking state on INPUT transport (where interruption is detected)
-            if hasattr(input_transport, '_is_bot_speaking'):
-                logger.info(f"🔍 BEFORE reset: _is_bot_speaking = {input_transport._is_bot_speaking}")
-                input_transport._is_bot_speaking = False
-                logger.info("✅ Reset input transport _is_bot_speaking = False")
-
-            # Also reset on output transport if it exists
-            if hasattr(output_transport, '_is_speaking'):
-                logger.info(f"🔍 BEFORE reset: output _is_speaking = {output_transport._is_speaking}")
-                output_transport._is_speaking = False
-                logger.info("✅ Reset output transport _is_speaking = False")
+            # Try to reset aggregator bot speaking state
+            if hasattr(context_aggregator, '_bot_is_speaking'):
+                logger.info(f"🔍 BEFORE reset: aggregator._bot_is_speaking = {context_aggregator._bot_is_speaking}")
+                context_aggregator._bot_is_speaking = False
+                logger.info("✅ Reset aggregator._bot_is_speaking = False")
+            else:
+                logger.warning("⚠️ Aggregator has no _bot_is_speaking attribute")
+                # Log all attributes that contain 'speak' or 'bot'
+                relevant_attrs = [attr for attr in dir(context_aggregator) if 'speak' in attr.lower() or 'bot' in attr.lower()]
+                logger.info(f"🔍 Aggregator attributes with 'speak' or 'bot': {relevant_attrs}")
 
         except Exception as e:
             logger.error(f"❌ Error in interrupt handler: {e}")
